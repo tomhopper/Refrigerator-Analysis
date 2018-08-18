@@ -7,26 +7,30 @@ output:
     css: ~/Dropbox/R and RMD CSS and HTML headers-footers/rmd_doc_suffix.css
     highlight: tango
     theme: spacelab
-references:
-- id: r2018
-  title: R A Language and Environment for Statistical Computing}
-  author: R Core Team
-  organization: R Foundation for Statistical Computing
-  address: Vienna, Austria
-  year: 2018
-  url: 'https://www.R-project.org/'
-- id: wickham2016
-  author: Hadley Wickham
-  title: ggplot2 Elegant Graphics for Data Analysis
-  publisher: Springer-Verlag New York
-  year: 2016
-  isbn: 978-3-319-24277-4
-  url: 'http://ggplot2.org'
+bibliography: guy_refrigerator.bib
 
-
+nocite: |
+  @Alathea:2015qf, @Grolemund:2011ff, @R-Core-Team:2018lh, @Scrucca:2004oz, @Slowikowski:2018dk, @Wickham:2016ec, @Wickham:2017xr, @Xie:2014dp, @Zhu:2018kb
 ---
 
-```{r setup, include=FALSE}
+
+## The Problem
+
+<span class="newthought">Guy has been measuring his refrigerator's electricity consumption</span> with a power meter. He wants to know if it's using too much electricity and should be replaced, or if it's running as expected.
+
+The nameplate states that the unit will consume 296 kilowatt-hour (kWh) per year.
+
+As we work through this problem, we need to think carefully about variation, the measurement process, and the relation of the data to the specification. In real-world problems, getting these right is often the difference between success and failure.
+
+Is 296 kWh the design target or a projection based on some test? If it's a target, is it an upper specification ("not to exceed"), a mean, or the median? Does it mean that some percentage of the time, this model of refrigerator will consume at most 296 kWh of electricity under given test conditions (a statistical upper limit), or that the refrigerator is flat-out defective if it ever exceeds 296 kWh in a year (a go/no-go condition such as used in manufacturing)?
+
+In this case, we don't know what it means, but we can say that if the expected range of electricity consumption is greater than this value, it's time for Guy to consider replacing his refrigerator.
+
+## Setup
+
+We'll use the following libraries in this analysis.
+
+```{r libraries, warning=FALSE, message=FALSE}
 library(tidyverse)
 library(lubridate)
 library(qcc)
@@ -34,36 +38,42 @@ library(ggrepel)
 library(knitr)
 library(kableExtra)
 library(captioner)
+```
 
+
+```{r setup, include=FALSE}
 opts_chunk$set(dev="png", 
                dev.args=list(type="cairo"),
-               dpi=96)
+               dpi=92,
+               fig.width = 6,
+               fig.height = 4)
 ```
 
 ```{r setup_captions, include=FALSE}
 fig_nums <- captioner(prefix = "Figure")
 fig_ts_raw_cap <- fig_nums(name = "fig_ts_raw",
                            caption = "Time series plot of the data.")
+fig_ts_date_cap <- fig_nums(name = "fig_ts_date",
+                            caption = "Plot of cumulative electricity consumption in kWh versus date.")
 fig_ts_w_cap <- fig_nums(name = "fig_ts_w",
-                         caption = "The average daily kWh used by date.")
-fig_imr_cap <- fig_nums(name = "fig_imr",
-                        caption = "Individuals and moving range charts for the daily consumption data.")
+                         caption = "The average daily kWh used by date. Lines represent the span of days over which the average is taken.")
+fig_i_cap <- fig_nums(name = "fig_i",
+                      caption = "Individuals chart for the daily consumption data.")
+fig_mr_cap <- fig_nums(name = "fig_mr",
+                       caption = "Moving range chart for the daily consumption data.")
+fig_dist_cap <- fig_nums(name = "fig_dist",
+                       caption = "Comparison of predicted annual consumption and nameplate consumption.")
+
 table_nums <- captioner(prefix = "Table")
+table_rdata_cap <- table_nums(name = "tab_rdata",
+                              caption = "The data provided by Guy.")
 table_wdata_cap <- table_nums(name = "tab_wdata",
-                              caption = "The data set after wrangling.")
+                              caption = "The data after wrangling.")
 ```
-
-## The Problem
-
-<span class="newthought">Guy has been measuring his refrigerator's electricity consumption</span> with a power meter, and he wants to know if it's time to replace the refrigerator based on electricity consumption.
-
-The nameplate states that the unit will consume 296 kWh per year. We don't know if this is a target mean, an upper tolerance limit, or the absolute maximum.
 
 ## The Data
 
-
-
-```{r load_data}
+```{r load_data, include=FALSE}
 # The data ##
 rf_df <- structure(list(Date = c("16/06/18", "29/06/18", "01/07/18", "06/07/18",
                                  "08/07/18", "13/07/18", "15/07/18", "21/07/18", 
@@ -95,10 +105,22 @@ rf_df <- structure(list(Date = c("16/06/18", "29/06/18", "01/07/18", "06/07/18",
                      .Names = c("cols", "default"), 
                      class = "col_spec"))
 
-head(rf_df)
 ```
 
-The power meter reports in cumulative kWh of electricity consumed. However, it resets every time there's a power outage. The the time of the power outages is not known, but the first measurement after a power outage is marked with a "PC" in the $Comment$ variable.
+This is a fairly small dataset, so we can print it in its entirity.
+
+<span class="caption">`r table_nums('tab_rdata')`</span>
+```{r raw_data, echo=FALSE}
+kable(rf_df, format = "html") %>% kable_styling()
+```
+
+The power meter reports in cumulative kWh of electricity consumed. However, it resets every time there's a power outage, and there have been several of those. The time of the power outages is not known, but the first measurement after a power outage is identified with a "PC" in the $Comment$ variable.
+
+As with the specification, we need to be careful in thinking about this data. Guy's measument process may be different than that intended by the manufacturer, and produce somewhat different results. That might not be a difference&mdash;a bias&mdash;of a factor of 2, but it could certainly be a bias of 20%.
+
+Likewise, it's unlikely that the refrigerator will consume electricity at different rates over time. Warmer or cooler room temperatures will certainly alter electricity consumption, as will more or less frequent access of the refrigerator and longer or shorter durations of access. A big party
+
+What this all means is that we need to use this small dataset for all that it's worth, making sure that we data from a single population and taking full advantage of any variation we find in the data.
 
 ## EDA
 
@@ -115,9 +137,9 @@ rf_df %>%
 
 The cumulative nature of the reported energy consumption, and the occasional resets, are both obvious.
 
-It's also clear that the consumption is not entirely linear&mdash;there is some variation in the rate of use from day to day.
+It's also appears that the consumption is not entirely linear&mdash;there is some variation in the rate of use from point to point. However, we're looking at the data by row number rather than by date; maybe the apparent variation is just due to the irregularity of observations. After wrangling the data, we'll look at this again.
 
-Of note: the first data point precedes the first power outage.
+Of note: the first data point precedes the first power outage. It seems unlikely that this will be of any use to us.
 
 ## Data wrangling
 
@@ -131,7 +153,8 @@ To predict annual electricity usage, we need to calculate a rate that we can the
 rf_df <- rf_df %>%
   mutate(Date = dmy(Date)) %>% 
   mutate(diff = kWh - lag(kWh),
-         days = Date - lag(Date)) 
+         Date_Start = lag(Date)) %>% 
+  mutate(days = Date - Date_Start) 
 
 # Due to power outages, lines with "PC" have invalid $diff values, 
 # so convert to NA
@@ -150,36 +173,54 @@ rf_df <- rf_df %>%
   mutate(daily_kWh = diff / as.integer(days))
 ```
 
-Let's have alook at the full, wrangled data set.
+`r table_nums("tab_wdata", display = "cite")` provides the full, wrangled dataset.
 
 <span class="caption">`r table_nums('tab_wdata')`</span>
 ```{r show_data, results="asis", echo=FALSE}
 kable(rf_df, format = "html") %>% kable_styling()
 ```
 
-The key variable that we're interested in is the $daily\_kWh$, so let's also plot it.
+Now that we've fixed the $Date$ column, we can re-plot `r fig_nums("fig_ts_raw", display = "cite")` by date.
+
+```{r raw_date, fig.cap=fig_ts_date_cap}
+rf_df %>%
+  ggplot(aes(x = Date, y = kWh)) +
+  geom_point()
+```
+
+The apparent variation in daily energy consumption may be a little less, plotted this way, but it's still there. With a little more work, we might have made this a little more obvious by creating a grouping column and plotting a linear fit with `geom_smooth(method = 'lm')`, but for EDA that we're not sharing, eyeballing it is good enough. Either the refrigerator is not constant in its electricity consumption (as we expected), or the power meter is inconsistent in measurement. Possibly both are sources of variation here.
+
+The key variable that we're interested in is the average daily electricity use, $daily\_kWh$, so let's plot it gainst the date of observation. Since this is an average over some number of days, it would be nice to also indicate over how many days each calculated value is averaged.
+
 
 ```{r analysis, fig.height=3, fig.width=5, fig.cap=fig_ts_w_cap}
 # Analysis ##
 # Basic time series plot of the data
 rf_df %>% 
-  ggplot(aes(x = Date, y = daily_kWh)) +
-  geom_point()
+  ggplot() +
+  geom_point(aes(x = Date, y = daily_kWh)) +
+  geom_segment(aes(x = Date_Start, y = daily_kWh, xend = Date, yend = daily_kWh)) +
+  labs(x = "Date",
+       y = "Average Daily Consumption, kWh")
 ```
 
 ## Analysis and Results
 
 Our analysis will check that the data is suitable for making predictions. We will then predict a range of possible annual values, and finally assess whether the specification of 296 kWh per annum falls with those predictions.
 
+### Data homogeneity
+
 In `r fig_nums("fig_ts_w", display = "cite")` there seems to be an unusually high (and maybe a low) value. Is this an outlier? Is it an artifact of the measurement process? Was Guy having a party and the refrigerator was seeing heavy use?
 
-These questions are critical to our ability to reliably predict future data. We have sampled some process. In order to make predictions about the future, we need those samples to all come from a singular, or *homogeneous*, process. If we're seeing samples different processes, or *inhomogeneous*, processes then we either have to segregate the data or give up making predictions.
+These questions are critical to our ability to reliably predict future data. We have sampled some process. In order to make predictions about the future, we need those samples to all come from a singular, or *homogeneous*, process. If we're seeing samples different, or *inhomogeneous*, processes then we either have to segregate the data or give up making predictions.
 
 We can use an individuals and range chart ("ImR") to assess whether this data exhibits homogeneous properties&mdash;are we sampling from a single population of data and can make predictions about the future?
 
-```{r qcc, fig.height=3.5, fig.width=6, fig.cap=fig_imr_cap}
+```{r qcc_i, fig.cap=fig_i_cap}
 # Use qcc to plot the individual values and the moving range
 rf_imr <- qcc(data = rf_df$daily_kWh, type = "xbar.one")
+```
+```{r qcc_mr, fig.cap=fig_mr_cap}
 # Create the matrix used by qcc for the moving range chart.
 # Column 1 is the individuals data; column 2 is the same data with
 # a 1-row lag.
@@ -188,24 +229,31 @@ rf_daily_m <- matrix(c(rf_df$daily_kWh, lag(rf_df$daily_kWh)),
 rf_r <- qcc(data = rf_daily_m, type = "R", sizes = 2)
 ```
 
-With no out-of-control points on either the individuals or the moving range chart, it appears that we do have a homogeneous sample, and can continue with a prediction. However, nine sample points are not really enough to make this assessment with a high degree of confidence; we should continue collecting data until we have between 20 and 30 observations in our cleaned data set.[^1]
+With no out-of-control points on either the individuals or the moving range chart, it appears that we do have a homogeneous sample, and can continue with a prediction. However, nine sample points are not really enough to make this assessment with a high degree of confidence; we should continue collecting data until we have between 20 and 30 observations in our cleaned data set [@bpi:2016kh].
 
-Given the priso above, we now have estimates for key population parameters.
+### Population parameter estimates
+
+Given the *proviso* above, we now have estimates for key population parameters.
+
+While the ImR chart treated each data point as being of equal weight, what we have with $daily\_kWh$ are means of observations over variable numbers of days. The grand mean should therefore be weighted by how many days' worth of data was collected. From `r fig_nums("fig_ts_w", display = "cite")`, we might expect that this will slightly reduce the mean of $daily\_kWh$ from that calculated in the individuals chart (the "center" line).
+
+Since our estimate for the standard deviation is based on the sample-to-sample variance, it makes no sense to weight the calculation of standard deviation, and we'll just use the estimate provided by the moving range chart.
 
 ```{r pop_params}
-# Get the mean and standard deviation from these plots
-rf_daily_mean <- rf_imr$center
+# Calculate a mean and standard deviation
+rf_daily_mean <- sum(rf_df$daily_kWh * as.integer(rf_df$days)) / sum(as.integer(rf_df$days))
 rf_daily_sd <- rf_r$center
 ```
 
-These show an average daily consumption of `r format(round(rf_daily_mean, 2), digits = 2)` kWh, with a standard deviation of `r format(round(rf_daily_sd, 2), digits = 2, nsmall = 2)` kWh.
+We have an average daily consumption of `r format(round(rf_daily_mean, 2), digits = 2)` kWh, with a standard deviation of `r format(round(rf_daily_sd, 2), digits = 2, nsmall = 2)` kWh.
 
-We use Monte Carlo simulation to estimate annual electricity use for 1000 identical cases.
+### Simulating a year, over and over
+
+With these population parameter estimates, we use Monte Carlo simulation to estimate annual electricity use for 1000 identical cases. We do this by simulating daily consumption for 365 days and adding to obtain an annual figure. We then repeat this process 1000 times.
 
 ```{r mc_sim}
 # Use Monte Carlo simulation with these values to simulate
-# 1000 years of operation of this refigerator (or, alternately,
-# 1000 identical refrigerators operating for a year)
+# 1000 identical refrigerators operating for a year
 rf_annual <- replicate(expr = rnorm(n = 365, 
                                     mean = rf_daily_mean, 
                                     sd = rf_daily_sd) %>% 
@@ -215,7 +263,22 @@ rf_annual <- replicate(expr = rnorm(n = 365,
 head(rf_annual)
 ```
 
-```{r tols}
+We can compare the simulated annual performance to the nameplate performance with a histogram.
+
+```{r fig_tol_v_spec, fig.cap=fig_dist_cap}
+rf_annual_df <- data_frame(annual_kWh = rf_annual)
+rf_annual_df %>% 
+  ggplot(aes(x = annual_kWh)) +
+  geom_histogram(bins = 10, aes(y = ..density..)) +
+  geom_vline(xintercept = 296, color = "red") +
+  labs(x = "Annual electricity use, kWh") +
+  theme_linedraw() +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+```{r tols, echo=FALSE}
 # How big do we want our prediction intervals?
 sigmas <- 2
 
@@ -226,7 +289,11 @@ pi_percent_data <- paste0(format(x = (pnorm(sigmas) - pnorm(-sigmas)) * 100,
                           "%")
 ```
 
-Using the above Monte Carlo simulation, we can create tolerance intervals to bracket the consumption values that we will likely see over a year's time. In fact, we will construct a `r sigmas`-sigma, or `r pi_percent_data`, tolerance interval with 50% confidence.[^2]
+This looks like the refrigerator is at least operating in the range of the nameplate electricity consumption.
+
+### Tolerance intervals
+
+Using the above Monte Carlo simulation, we can also create tolerance intervals to bracket the consumption values that we will likely see over a year's time. We will construct a `r sigmas`-sigma, or `r pi_percent_data`, tolerance interval with a 50% confidence level [@Wheeler:2016hs]. These can be used to assess whether the range of predicted performance is different than the nameplate performance.
 
 ```{r story}
 # Data Story ##
@@ -236,31 +303,33 @@ rf_annual_sd <- sd(rf_annual)
 # Prediction interval lower and upper
 lcl <- rf_annual_mean - sigmas * rf_annual_sd
 ucl <- rf_annual_mean + sigmas * rf_annual_sd
+```
 
 
+```{r comparison_text, echo=FALSE}
 rf_annual_mean_pt <- format(round(mean(rf_annual), 0), digits = 2)
 rf_annual_sd_pt <- format(round(sd(rf_annual), 1), digits = 2)
 rf_annual_lcl <- format(lcl, digits = 3)
 rf_annual_ucl <- format(ucl, digits = 3)
 
-compare_txt <- if(lcl > 296) {
-  c("more than")
+if(lcl > 296) {
+  compare_txt <- c("more than")
+  action_txt <- c("consider replacing")
 } else {
+  action_txt <- c("not consider replacing")
   if(ucl < 296) {
-    c("less than")
+    compare_txt <- c("less than")
   } else {
-    c("about the same as")
+    compare_txt <- c("about the same as")
   }
 }
 ```
 
+
 ## Conclusion
 
-About `r pi_percent_data` of cases fall between `r rf_annual_lcl` kWh and `r rf_annual_ucl` kWh per annum with a 50% confidence. With a nameplate consumption of 296 kWh per annum, we can say that the refrigerator consumes `r compare_txt` the nameplate.
+Based on the provided data, we can expect annual electricity use to fall between `r rf_annual_lcl` kWh and `r rf_annual_ucl` kWh. With a nameplate consumption of 296 kWh per annum, we can say that the refrigerator very likely consumes `r compare_txt` the nameplate. Guy should `r action_txt` his refrigerator.
 
 
-[^1]: “How Much Data Do I Need to Calculate Control Limits?” *Control Charts Basics* | BPI Consulting, Aug. 2016, www.spcforexcel.com/knowledge/control-chart-basics/how-much-data-do-i-need-calculate-control-limits.
-
-[^2]: Wheeler, Donald J. “Statistical Tolerance Intervals.” *Quality Digest*, 4 Jan. 2016, www.qualitydigest.com/inside/statistics-column/010416-statistical-tolerance-intervals.html.
 
 # References
