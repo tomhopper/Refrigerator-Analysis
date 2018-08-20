@@ -7,12 +7,13 @@ output:
     css: ~/Dropbox/R and RMD CSS and HTML headers-footers/rmd_doc_suffix.css
     highlight: tango
     theme: spacelab
-bibliography: guy_refrigerator.bib
+bibliography: 
+  - guy_refrigerator.bib
+  - r_bib.bib
 
 nocite: |
   @Alathea:2015qf, @Grolemund:2011ff, @R-Core-Team:2018lh, @Scrucca:2004oz, @Slowikowski:2018dk, @Wickham:2016ec, @Wickham:2017xr, @Xie:2014dp, @Zhu:2018kb
 ---
-
 
 ## The Problem
 
@@ -20,11 +21,11 @@ nocite: |
 
 The nameplate states that the unit will consume 296 kilowatt-hour (kWh) per year.
 
-As we work through this problem, we need to think carefully about variation, the measurement process, and the relation of the data to the specification. In real-world problems, getting these right is often the difference between success and failure.
+As we work through this problem, we should think carefully about variation, the measurement process, and the relation of the data to the specification. In real-world problems, getting these right is often the difference between success and failure.
 
-Is 296 kWh the design target or a projection based on some test? If it's a target, is it an upper specification ("not to exceed"), a mean, or the median? Does it mean that some percentage of the time, this model of refrigerator will consume at most 296 kWh of electricity under given test conditions (a statistical upper limit), or that the refrigerator is flat-out defective if it ever exceeds 296 kWh in a year (a go/no-go condition such as used in manufacturing)?
+For starters, we should ask what "296 kWh" means. Is it the design target or a projection based on some test? If it's a target, is it an upper specification ("not to exceed"), a mean, or the median? Does it mean that some percentage of the time, this model of refrigerator will consume at most 296 kWh of electricity under given test conditions (a statistical upper limit), or that the refrigerator is flat-out defective if it ever exceeds 296 kWh in a year (a go/no-go condition such as used in manufacturing)?
 
-In this case, we don't know what it means, but we can say that if the expected range of electricity consumption is greater than this value, it's time for Guy to consider replacing his refrigerator.
+In this case, we could probably find out with enough digging into European Union energy efficiency standards. Short of that kind of research, we can say that if the expected range of electricity consumption is greater than this value, it's time for Guy to consider replacing his refrigerator. Our statistical tests, then, should focus on the range of possible values and whether or not our predicted range includes Guy's nameplate rating.
 
 ## Setup
 
@@ -54,7 +55,7 @@ fig_nums <- captioner(prefix = "Figure")
 fig_ts_raw_cap <- fig_nums(name = "fig_ts_raw",
                            caption = "Time series plot of the data.")
 fig_ts_date_cap <- fig_nums(name = "fig_ts_date",
-                            caption = "Plot of cumulative electricity consumption in kWh versus date.")
+                            caption = "Plot of cumulative electricity consumption in kWh versus date. Power outages and NA values have been removed.")
 fig_ts_w_cap <- fig_nums(name = "fig_ts_w",
                          caption = "The average daily kWh used by date. Lines represent the span of days over which the average is taken.")
 fig_i_cap <- fig_nums(name = "fig_i",
@@ -62,7 +63,7 @@ fig_i_cap <- fig_nums(name = "fig_i",
 fig_mr_cap <- fig_nums(name = "fig_mr",
                        caption = "Moving range chart for the daily consumption data.")
 fig_dist_cap <- fig_nums(name = "fig_dist",
-                       caption = "Comparison of predicted annual consumption and nameplate consumption.")
+                         caption = "Comparison of predicted annual consumption and nameplate consumption.")
 
 table_nums <- captioner(prefix = "Table")
 table_rdata_cap <- table_nums(name = "tab_rdata",
@@ -210,11 +211,11 @@ Our analysis will check that the data is suitable for making predictions. We wil
 
 ### Data homogeneity
 
-In `r fig_nums("fig_ts_w", display = "cite")` there seems to be an unusually high (and maybe a low) value. Is this an outlier? Is it an artifact of the measurement process? Was Guy having a party and the refrigerator was seeing heavy use?
+In `r fig_nums("fig_ts_w", display = "cite")` there seems to be an unusually high (and maybe a low) value. Is this an outlier? Is it an artifact of the measurement process? Was Guy having a party that day and the refrigerator was seeing heavy use?
 
-These questions are critical to our ability to reliably predict future data. We have sampled some process. In order to make predictions about the future, we need those samples to all come from a singular, or *homogeneous*, process. If we're seeing samples different, or *inhomogeneous*, processes then we either have to segregate the data or give up making predictions.
+These questions are critical to our ability to reliably predict future data. We have sampled some process, and in order to make predictions about the future, we need those samples to all come from a singular, or *homogeneous*, process. If we're seeing samples from different, or *inhomogeneous*, processes then we either have to segregate the data or give up making valid predictions.[@Wheeler:2009th]
 
-We can use an individuals and range chart ("ImR") to assess whether this data exhibits homogeneous properties&mdash;are we sampling from a single population of data and can make predictions about the future?
+We can use an individuals and range ("ImR") chart to assess whether this data exhibits homogeneous properties&mdash;are we sampling from a single population of data and can make predictions about the future?
 
 ```{r qcc_i, fig.cap=fig_i_cap}
 # Use qcc to plot the individual values and the moving range
@@ -226,10 +227,11 @@ rf_imr <- qcc(data = rf_df$daily_kWh, type = "xbar.one")
 # a 1-row lag.
 rf_daily_m <- matrix(c(rf_df$daily_kWh, lag(rf_df$daily_kWh)), 
                      byrow = FALSE, ncol = 2)
+# Use qcc to plot the moving range chart
 rf_r <- qcc(data = rf_daily_m, type = "R", sizes = 2)
 ```
 
-With no out-of-control points on either the individuals or the moving range chart, it appears that we do have a homogeneous sample, and can continue with a prediction. However, nine sample points are not really enough to make this assessment with a high degree of confidence; we should continue collecting data until we have between 20 and 30 observations in our cleaned data set [@bpi:2016kh].
+With no out-of-control points on either the individuals or the moving range chart, it appears that we do have a homogeneous sample, and can continue with a prediction. However, nine sample points are not really enough to make this assessment with a high degree of confidence; we should continue collecting data until we have between 20 and 30 observations in our cleaned data set [@bpi:2016kh]. If we find that some points are outliers, we need to investigate *why* the outliers exist in order to improve our predictions.[@Wheeler:2009bq]
 
 ### Population parameter estimates
 
