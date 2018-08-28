@@ -4,7 +4,7 @@ author: "Thomas Hopper"
 date: '`r format(Sys.Date(), "%B %Y")`'
 output: 
   html_document: 
-    css: ~/Dropbox/R and RMD CSS and HTML headers-footers/rmd_doc_suffix.css
+    css: ~/Dropbox/R_RMD_CSS_HTML_headers-footers/rmd_doc_suffix.css
     highlight: tango
     theme: spacelab
 bibliography: 
@@ -12,7 +12,7 @@ bibliography:
   - r_bib.bib
 
 nocite: |
-  @Alathea:2015qf, @Grolemund:2011ff, @R-Core-Team:2018lh, @Scrucca:2004oz, @Slowikowski:2018dk, @Wickham:2016ec, @Wickham:2017xr, @Xie:2014dp, @Zhu:2018kb
+  @Alathea2015qf, @Grolemund2011ff, @R-Core-Team2018lh, @Scrucca2004oz, @Slowikowski2018dk, @Wickham2016ec, @Wickham2017xr, @Xie2014dp, @Zhu2018kb
 ---
 
 ## The Problem
@@ -25,7 +25,7 @@ As we work through this problem, we should think carefully about variation, the 
 
 For starters, we should ask what "296 kWh" means. Is it the design target or a projection based on some test? If it's a target, is it an upper specification ("not to exceed"), a mean, or the median? Does it mean that some percentage of the time, this model of refrigerator will consume at most 296 kWh of electricity under given test conditions (a statistical upper limit), or that the refrigerator is flat-out defective if it ever exceeds 296 kWh in a year (a go/no-go condition such as used in manufacturing)?
 
-In this case, we could probably find out with enough digging into European Union energy efficiency standards. Short of that kind of research, we can say that if the expected range of electricity consumption is greater than this value, it's time for Guy to consider replacing his refrigerator. Our statistical tests, then, should focus on the range of possible values and whether or not our predicted range includes Guy's nameplate rating.
+In this case, we could probably find out with enough digging into European Union energy efficiency standards. Short of that kind of research, we can suppose that it's either a mean or an upper limit. If the predicted electricity consumption is greater than this value, it's time for Guy to consider replacing his refrigerator. Our statistical tests, then, should focus on the range of possible values and whether or not that range includes the nameplate rating.
 
 ## Setup
 
@@ -39,6 +39,8 @@ library(ggrepel)
 library(knitr)
 library(kableExtra)
 library(captioner)
+library(RColorBrewer)
+library(gmodels)
 ```
 
 
@@ -54,6 +56,8 @@ opts_chunk$set(dev="png",
 fig_nums <- captioner(prefix = "Figure")
 fig_ts_raw_cap <- fig_nums(name = "fig_ts_raw",
                            caption = "Time series plot of the data.")
+fig_hist_raw_cap <- fig_nums(name = "fig_hist_raw",
+                             caption = "Distribution of the calculated daily electricity use.")
 fig_ts_date_cap <- fig_nums(name = "fig_ts_date",
                             caption = "Plot of cumulative electricity consumption in kWh versus date. Power outages and NA values have been removed.")
 fig_ts_w_cap <- fig_nums(name = "fig_ts_w",
@@ -63,13 +67,19 @@ fig_i_cap <- fig_nums(name = "fig_i",
 fig_mr_cap <- fig_nums(name = "fig_mr",
                        caption = "Moving range chart for the daily consumption data.")
 fig_dist_cap <- fig_nums(name = "fig_dist",
-                         caption = "Comparison of predicted annual consumption and nameplate consumption.")
+                         caption = "Range of likely annual consumption predicted using a normal distribution and population parameters from the ImR charts. Red line indicates nameplate annual consumption.")
+fig_distbs_cap <- fig_nums(name = "fig_distbs",
+                           caption = "Range of likely annual consumption predicted from bootstrapping. Red line indicates nameplate annual consumption.")
+fig_comphist_cap <- fig_nums(name = "fig_comphist",
+                             caption = "Range of likely annual consumption predicted by each method. Red line indicates nameplate annual consumption.")
 
 table_nums <- captioner(prefix = "Table")
 table_rdata_cap <- table_nums(name = "tab_rdata",
                               caption = "The data provided by Guy.")
 table_wdata_cap <- table_nums(name = "tab_wdata",
                               caption = "The data after wrangling.")
+table_comp_cap <- table_nums(name = "table_comp",
+                             caption = "Comparison of annual predictions from a normal distribution for modeling daily values and from bootstrapping.")
 ```
 
 ## The Data
@@ -112,22 +122,27 @@ This is a fairly small dataset, so we can print it in its entirity.
 
 <span class="caption">`r table_nums('tab_rdata')`</span>
 ```{r raw_data, echo=FALSE}
-kable(rf_df, format = "html") %>% kable_styling()
+kable(rf_df, format = "html", 
+      digits = c(NA, 2, NA)) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"), 
+                full_width = FALSE)
 ```
 
 The power meter reports in cumulative kWh of electricity consumed. However, it resets every time there's a power outage, and there have been several of those. The time of the power outages is not known, but the first measurement after a power outage is identified with a "PC" in the $Comment$ variable.
 
 As with the specification, we need to be careful in thinking about this data. Guy's measument process may be different than that intended by the manufacturer, and produce somewhat different results. That might not be a difference&mdash;a bias&mdash;of a factor of 2, but it could certainly be a bias of 20%.
 
-Likewise, it's unlikely that the refrigerator will consume electricity at different rates over time. Warmer or cooler room temperatures will certainly alter electricity consumption, as will more or less frequent access of the refrigerator and longer or shorter durations of access. A big party
+Likewise, it's likely that the refrigerator will consume electricity at different rates over time. Warmer or cooler room temperatures will certainly alter electricity consumption, as will more or less frequent access of the refrigerator and longer or shorter durations of access. A big party would probably bump that usage, too.
+
+Likewise, the measurement process can introduce variaton. We have time-of-measurement in full day increments, but Guy may have recorded in the morning one day, the evening the next day, and the morning on the third day, so that even if the rate of electricity were constant, his observations would show an uneven day-to-day rate.
 
 What this all means is that we need to use this small dataset for all that it's worth, making sure that we data from a single population and taking full advantage of any variation we find in the data.
 
 ## EDA
 
-Here's how the data looks in raw form, plotted as a simple time series
+Let's take an early look at how the numeric data look. Since this is cumulative data over time, it makes sense to plot it as a simple time series against the row index.
 
-```{r eda, fig.cap=fig_ts_raw_cap}
+```{r eda_scatter, fig.cap=fig_ts_raw_cap}
 # Preliminary EDA ##
 rf_df %>%
   mutate(index = row_number()) %>% 
@@ -156,7 +171,49 @@ rf_df <- rf_df %>%
   mutate(diff = kWh - lag(kWh),
          Date_Start = lag(Date)) %>% 
   mutate(days = Date - Date_Start) 
+```
 
+
+Now that we've fixed the $Date$ column, we can re-plot `r fig_nums("fig_ts_raw", display = "cite")` by date rather than by index.
+
+```{r raw_date, fig.cap=fig_ts_date_cap}
+rf_df %>%
+  ggplot(aes(x = Date, y = kWh)) +
+  geom_point()
+```
+
+The apparent variation in daily energy consumption may be a little less, plotted this way, but it's still there. With a little more work, we might have made this a little more obvious by creating a grouping column and plotting a linear fit with `geom_smooth(method = 'lm')`, but for EDA that we're not sharing, eyeballing it is good enough. Either the refrigerator is not constant in its electricity consumption (as we expected), or the power meter is inconsistent in measurement. Possibly both are sources of variation here.
+
+We should also look at when measurements are collected, and this may tell us something.
+
+```{r plotdate}
+daynames <- c('1' = "Monday",
+              '2' = "Tuesday",
+              '3' = "Wednesday",
+              '4' = "Thursday",
+              '5' = "Friday",
+              '6' = "Saturday",
+              '7' = "Sunday")
+rf_df %>% 
+  mutate(DOW = lubridate::wday(Date, week_start = 1)) %>% 
+  group_by(DOW, Comment) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  mutate(DOW = as.factor(daynames[as.character(DOW)])) %>% 
+  ggplot(aes(x = DOW, y = n, color = Comment)) +
+  geom_point() +
+  scale_x_discrete(breaks = daynames, label = daynames) +
+  labs(y = "Count of measurements",
+       x = "Day of measurement") +
+  coord_flip() +
+  facet_grid(.~Comment)
+```
+
+We can see that all of the measurements have been taken on the weekend, and all of the power outages happened between Sunday and Friday.
+
+If this is the case, we might expect Fridays to show higher consumption rates than Saturday or Sunday. We should calculate a rate for kWh consumption. We have to be careful, though, since those power outages throw off our totals.
+
+```{r wrangle2}
 # Due to power outages, lines with "PC" have invalid $diff values, 
 # so convert to NA
 # Had some trouble doing this in dplyr due to the NAs...
@@ -174,22 +231,16 @@ rf_df <- rf_df %>%
   mutate(daily_kWh = diff / as.integer(days))
 ```
 
-`r table_nums("tab_wdata", display = "cite")` provides the full, wrangled dataset.
+`r table_nums("tab_wdata", display = "cite")` displays the updated, wrangled dataset.
 
 <span class="caption">`r table_nums('tab_wdata')`</span>
 ```{r show_data, results="asis", echo=FALSE}
-kable(rf_df, format = "html") %>% kable_styling()
+kable(rf_df, format = "html",
+      digits = c(NA, 2, 2, NA, NA, 2, 2)) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE)
 ```
 
-Now that we've fixed the $Date$ column, we can re-plot `r fig_nums("fig_ts_raw", display = "cite")` by date.
-
-```{r raw_date, fig.cap=fig_ts_date_cap}
-rf_df %>%
-  ggplot(aes(x = Date, y = kWh)) +
-  geom_point()
-```
-
-The apparent variation in daily energy consumption may be a little less, plotted this way, but it's still there. With a little more work, we might have made this a little more obvious by creating a grouping column and plotting a linear fit with `geom_smooth(method = 'lm')`, but for EDA that we're not sharing, eyeballing it is good enough. Either the refrigerator is not constant in its electricity consumption (as we expected), or the power meter is inconsistent in measurement. Possibly both are sources of variation here.
 
 The key variable that we're interested in is the average daily electricity use, $daily\_kWh$, so let's plot it gainst the date of observation. Since this is an average over some number of days, it would be nice to also indicate over how many days each calculated value is averaged.
 
@@ -205,17 +256,55 @@ rf_df %>%
        y = "Average Daily Consumption, kWh")
 ```
 
+Now that we have values that are directly comparable in the $daily\_kWh$ variable, we should also look at its distribution, as this can tell us something useful about the assumptions that we can make during our analysis.
+
+```{r eda_hist, fig.cap=fig_hist_raw_cap}
+rf_df %>% 
+  ggplot(aes(x = daily_kWh)) +
+  geom_histogram(bins = 10)
+```
+
+We appear to have a skewed distribution, or possibly two separate distributions (i.e. this may be a bimodal distribution).
+
+We might see two distributions if there are really two processes at play. For instance, perhaps the data clustered around 0.8 kWh/day is all when the refrigerator hasn't been opened (perhaps no one's been home), and the one point above 1.2 kWh/day is when the refrigerator has been opened.
+
+At the same time, with only common-cause variation in usage and measurement, we would expect to see high days and low days. While the low days must be bound by 0 kWh/day, the upper bound is determined only by the maximum power use of the compressor and lights. The distribution of daily kWh should be skewed with a long tail toward higher numbers, and it appears that we might be seeing that here.
+
+We should also have a look at the days when measurements were taken, to see if there's anything interesting or suggestive in the data.
+
+```{r day_of_measurement, warning=FALSE}
+rf_df %>% 
+  mutate(DOW = lubridate::wday(Date, week_start = 1)) %>% 
+  group_by(DOW) %>% 
+  summarise(mean_daily_kWh = mean(daily_kWh), 
+            n = n(),
+            sd = sd(daily_kWh)) %>% 
+  mutate(se = sd / sqrt(n),
+         ci_lo = mean_daily_kWh - qt(1 - (0.05 / 2), n - 1) * se,
+         ci_hi = mean_daily_kWh + qt(1 - (0.05 / 2), n - 1) * se) %>% 
+  # mutate(conf_lo = gmodels::ci(daily_kWh)[2],
+  #        conf_hi = ci(daily_kWh)[3]) %>% 
+  ungroup() %>% 
+  mutate(DOW = as.factor(daynames[as.character(DOW)])) %>% 
+  kable(format = "html", digits = 2) %>% 
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                full_width = FALSE)
+
+```
+
+With only `r nrow(rf_df)` datapoints, it's hard to gain much information from this. Friday and Saturday seem to be similar, while Sunday might be a little higher. If this house were unused during the week, we might have expected that Friday would be much lower than either Saturday or Sunday. However, with confidence intervals spanning all three day's mean readings, there is no significant difference between them, and we cannot learn anything further.
+
 ## Analysis and Results
 
-Our analysis will check that the data is suitable for making predictions. We will then predict a range of possible annual values, and finally assess whether the specification of 296 kWh per annum falls with those predictions.
+Our analysis will first check that the data is suitable for making predictions. We will then predict a range of likely annual values, and finally assess whether the specification of 296 kWh per annum falls with those predictions.
 
 ### Data homogeneity
 
-In `r fig_nums("fig_ts_w", display = "cite")` there seems to be an unusually high (and maybe a low) value. Is this an outlier? Is it an artifact of the measurement process? Was Guy having a party that day and the refrigerator was seeing heavy use?
+In `r fig_nums("fig_ts_w", display = "cite")` we were left wondering if we have skewed data from one process or symmetric data from two processes.
 
-These questions are critical to our ability to reliably predict future data. We have sampled some process, and in order to make predictions about the future, we need those samples to all come from a singular, or *homogeneous*, process. If we're seeing samples from different, or *inhomogeneous*, processes then we either have to segregate the data or give up making valid predictions.[@Wheeler:2009th]
+This question is critical to our ability to reliably predict future data. We have sampled some process, and in order to make predictions about the future, we need those samples to all come from a singular, or *homogeneous*, process. If we're seeing samples from different, or *inhomogeneous*, processes then we either have to segregate the data or give up making valid predictions.[@Wheeler2009th]
 
-We can use an individuals and range ("ImR") chart to assess whether this data exhibits homogeneous properties&mdash;are we sampling from a single population of data and can make predictions about the future?
+We can use an individuals and moving range ("ImR") chart to quickly assess whether this data exhibits homogeneous properties&mdash;are we sampling from a single population of data and can make predictions about the future?
 
 ```{r qcc_i, fig.cap=fig_i_cap}
 # Use qcc to plot the individual values and the moving range
@@ -231,11 +320,29 @@ rf_daily_m <- matrix(c(rf_df$daily_kWh, lag(rf_df$daily_kWh)),
 rf_r <- qcc(data = rf_daily_m, type = "R", sizes = 2)
 ```
 
-With no out-of-control points on either the individuals or the moving range chart, it appears that we do have a homogeneous sample, and can continue with a prediction. However, nine sample points are not really enough to make this assessment with a high degree of confidence; we should continue collecting data until we have between 20 and 30 observations in our cleaned data set [@bpi:2016kh]. If we find that some points are outliers, we need to investigate *why* the outliers exist in order to improve our predictions.[@Wheeler:2009bq]
+With no out-of-control points on either the individuals or the moving range chart, it appears that we do have a homogeneous sample, and can continue with a prediction. However, nine sample points are not really enough to make this assessment with a high degree of confidence; we should continue collecting data until we have between 20 and 30 observations in our cleaned data set [@bpi2016kh]. If we find that some points are outliers, we need to investigate *why* the outliers exist in order to improve our predictions.[@Wheeler2009bq]
 
-### Population parameter estimates
+### Approach to model-building
 
-Given the *proviso* above, we now have estimates for key population parameters.
+One approach to estimate annual electricity consumption is to choose a distribution with population parameter estimates (e.g. mean and standard deviation) from the sample that we have so far. Another approach is bootstrap, where we build a large bootstrap sample&mdash;that we hope is a representative of the population&mdash;from the existing samples and then estimate population parameters from the bootstrap distribution.
+
+The bootstrap method is attractive in this case because we don't know quite what shape the underlying distribution should have, and bootstrapping takes care of this for us. When bootstrapping, we randomly sample from the data that we have over and over to create a larger data set with the same distribution as the original set of observations. We can then use this larger data set to estimate population parameters. For instance, if the population parameters that we're interested in relate to the distribution of the possible annual consumption, we would bootstrap 365 values from our `r nrow(rf_df)` observations, add them up, repeat many times, and then calculate annual mean and other parameters.
+
+However, since our samples do not all represent quite the same thing, and in fact are a bunch of averages over varying lengths of time, bootstrapping, while it probably can be done, may pose some special challenges.
+
+Alternatively, we might solve this by recognizing that we're only interested in annual numbers. By adding up many individual daily values, we can rely on the central limit theorem (CLT): the resulting annual usage estimates will be normally distributed. 
+
+Not knowing the starting distribution of daily values, though, we would have to make an assumption about the correct shape, fit the distribution parameters to the limited data, and then predict annual values, and finally rely on the CLT and the variation in the measurements to make the errors in our assumptions about the shape of the distribution irrelevant. Here, again, we will need to be careful about weighting. 
+
+Since the distribution of annual consumption predictions will be normal, it may be that he specific choice of distribution of underlying *daily* usage may not have a large impact on our final analysis of annual predicted usage, so we might be safe in using a normal distribution for daily values without much loss of fidelity in the model, but that's not immediately certain.
+
+Let's compare the two approaches.
+
+### Modeling from a distribtion
+
+#### Population parameter estimates
+
+Given the *proviso* above about not having enough observations to be highly confident that our data is homogeneous, we now have estimates for key population parameters.
 
 While the ImR chart treated each data point as being of equal weight, what we have with $daily\_kWh$ are means of observations over variable numbers of days. The grand mean should therefore be weighted by how many days' worth of data was collected. From `r fig_nums("fig_ts_w", display = "cite")`, we might expect that this will slightly reduce the mean of $daily\_kWh$ from that calculated in the individuals chart (the "center" line).
 
@@ -249,29 +356,36 @@ rf_daily_sd <- rf_r$center
 
 We have an average daily consumption of `r format(round(rf_daily_mean, 2), digits = 2)` kWh, with a standard deviation of `r format(round(rf_daily_sd, 2), digits = 2, nsmall = 2)` kWh.
 
-### Simulating a year, over and over
+#### Simulating a year, over and over
 
 With these population parameter estimates, we use Monte Carlo simulation to estimate annual electricity use for 1000 identical cases. We do this by simulating daily consumption for 365 days and adding to obtain an annual figure. We then repeat this process 1000 times.
 
 ```{r mc_sim}
 # Use Monte Carlo simulation with these values to simulate
 # 1000 identical refrigerators operating for a year
+num_replicates <- 10000
+
 rf_annual <- replicate(expr = rnorm(n = 365, 
                                     mean = rf_daily_mean, 
                                     sd = rf_daily_sd) %>% 
                          sum(), 
-                       n = 1000)
+                       n = num_replicates)
 
 head(rf_annual)
+
+# Population mean and standard deviation, based on the moving range
+rf_annual_mean <- mean(rf_annual)
+rf_annual_sd <- sd(rf_annual)
+
 ```
 
 We can compare the simulated annual performance to the nameplate performance with a histogram.
 
-```{r fig_tol_v_spec, fig.cap=fig_dist_cap}
-rf_annual_df <- data_frame(annual_kWh = rf_annual)
+```{r fig_tol_v_spec, fig.cap=fig_dist_cap, warning=FALSE}
+rf_annual_df <- data_frame(annual_total_kWh = rf_annual)
 rf_annual_df %>% 
-  ggplot(aes(x = annual_kWh)) +
-  geom_histogram(bins = 10, aes(y = ..density..)) +
+  ggplot(aes(x = annual_total_kWh)) +
+  geom_histogram(bins = 15, aes(y = ..density..)) +
   geom_vline(xintercept = 296, color = "red") +
   labs(x = "Annual electricity use, kWh") +
   theme_linedraw() +
@@ -280,8 +394,120 @@ rf_annual_df %>%
         axis.ticks.y = element_blank())
 ```
 
+```{r tol_v_norm}
+nortest::ad.test(rf_annual_df$annual_total_kWh)
+```
+
+This looks like the refrigerator is at least operating in the range of the nameplate electricity consumption.
+
+### Bootstrap
+
+#### Bootstrapping with Monte Carlo simulation
+
+To bootstrap, we use the samples that we have to create larger data sets. This is accomplished by randomly *resampling with replacement* from the existing samples. Unlike parametric methods (e.g. assuming a normal distribution), bootstrapping preserves characteristics of the sample distribution&mdash;which presumably mirrors the population distribution&mdash;while still allowing us to estimate population parameters such as mean, standard deviation, and confidence intervals, and to perform other statistical analyses such as regression.
+
+In this case, we'll bootstrap a year's worth of daily consumption from our observed samples. We can then add up the daily values to obtain an estimate for the year, or estimate population statististics for the daily values.
+
+One bootstrap provides us with a single estimate. As with the previous method, we use Monte Carlo simulation to repeat the bootstrap many times in order to estimate population parameters like mean and standard deviation.
+
+```{r bs_annual}
+# Calculate a weight for sampling
+rf_df <- rf_df %>% 
+  mutate(weight = as.integer(days) / sum(as.integer(days)))
+
+# Set up a data frame to store results
+bs_annual_df <- data_frame(annual_total_kWh = rep(NA, times = num_replicates),
+                           daily_avg_kWh = rep(NA, times = num_replicates),
+                           daily_sd_kWh = rep(NA, times = num_replicates))
+
+# Monte Carlo simulation num_replicates times
+for(i in 1:num_replicates) {
+  # Bootstrap for a year's worth of daily values
+  bs_annual <- sample(x = rf_df$daily_kWh, 
+                      size = 365, 
+                      replace = TRUE, 
+                      prob = rf_df$weight)
+  # Calculate and store the cumulative total, daily mean, and daily std dev
+  bs_annual_df[i, "annual_total_kWh"] <- sum(bs_annual)
+  bs_annual_df[i, "daily_avg_kWh"] <- mean(bs_annual)
+  bs_annual_df[i, "daily_sd_kWh"] <- sd(bs_annual)
+}
+```
+
+#### Examining the bootstrap
+
+Having obtained our `r format(num_replicates, digits = 0, big.mark = "&thinsp;")` annual estimates, we can now see how they are distributed and compare them to the refrigerator's nameplate consumption, as we did for the normal distribution-based analysis in `r fig_nums("fig_dist")`.
+
+```{r bs_results, fig.cap=fig_distbs_cap, warning=FALSE}
+# Plot annual estimates and test for normality
+bs_annual_df %>% 
+  ggplot(aes(x = annual_total_kWh)) +
+  geom_histogram(bins = 15, aes(y = ..density..)) +
+  geom_vline(xintercept = 296, color = "red") +
+  labs(x = "Annual electricity use, kWh") +
+  scale_x_continuous(limits = range(rf_annual_df$annual_total_kWh)) +
+  theme_linedraw() +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+nortest::ad.test(bs_annual_df$annual_total_kWh)
+```
+
+### Comparison
+
+<span class="caption">`r table_nums('tab_comp')`</span>
+```{r comp_tbl, echo=FALSE}
+comp_df <- {rf_annual_df %>% 
+    mutate(method = "Distribution")} %>% 
+  rbind({bs_annual_df %>% 
+      mutate(method = "Bootstrap") %>% 
+      select(method, annual_total_kWh)}) %>% 
+  select(method, annual_total_kWh)
+
+comp_df %>% 
+  group_by(method) %>% 
+  summarise(mean_annual_kWh = mean(annual_total_kWh),
+            stdv_annual_kWh = sd(annual_total_kWh)) %>% 
+kable(format = "html", digits = c(NA, 0, 1, 2, 2)) %>% 
+  kable_styling(full_width = FALSE)
+```
+
+```{r comp_bp, fig.cap=fig_comphist_cap}
+# Select colors that are colorblind-safe and print-friendly
+# from the ColorBrewer palettes
+colors <- RColorBrewer::brewer.pal(n = 3, name = "Dark2")[c(1,3)]
+
+# Plot histogram of each distribution overlapping, in the
+# selected colors
+comp_df %>% 
+  ggplot(aes(x = annual_total_kWh, fill = method)) +
+  geom_histogram(bins = 18, position = "identity", alpha = 0.5) +
+  scale_fill_manual(values = colors) +
+  geom_vline(xintercept = 296, color = "red") +
+  labs(x = "Annual electricity use, kWh") +
+  theme_linedraw() +
+  theme(axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+```
+
+This difference in distributions is entirely due to our choice to use the moving range to etimate the population standard deviation for the normal distribution-based monte carlo simulation. That choice was entirely valid and correct, as were our decisions in bootstrapping. Therefore we have two slightly different predictions and no statistical or algorithmic means of selecting between them. In both cases, our estimates should improve with more data, and we should see the two sets of estimates converge.
+
+Which method we choose to base our decision recommendations off of depends on personal or organizational preferences. Having made this choice, we should be consistent in future modeling and stick with it so that we make decisions based on the same methods and criteria.
+
+### Tolerance intervals
+
+Most newly-minted data scientists are more familiar with the concept of confidence intervals than tolerance intervals.
+
+Confidence intervals are a means of indicating ranges of uncertainty in our estimates of certain population parameters, such as the population mean. When we want a point estimate for a population parameter, it's good practice to also report a confidence interval to indicate how good (or poor) our estimate is.
+
+Tolerance intervals are estimates of the range of possible future values that we can expect from a process, and come with a confidence level. A very typical tolerance interval is one of 99.7% with a 50% confidence level: with a confidence of 50%, we predict that 99.7% of future values will fall within the tolerance range.
+
+Since we don't know what our 296 kWh specification means, we can at least say that it should fall either within or above the range of future observed consumption, and this points us toward using tolerance intervals. 
+
 ```{r tols, echo=FALSE}
-# How big do we want our prediction intervals?
+# How much of the population do we want to bracket with tolerance intervals?
 sigmas <- 2
 
 # Percent of cases covered by prediction interval
@@ -291,35 +517,42 @@ pi_percent_data <- paste0(format(x = (pnorm(sigmas) - pnorm(-sigmas)) * 100,
                           "%")
 ```
 
-This looks like the refrigerator is at least operating in the range of the nameplate electricity consumption.
+Using the above, we can create tolerance intervals to bracket the consumption values that we will likely see over a year's time. We will construct a `r sigmas`-sigma, or `r pi_percent_data`, tolerance interval with a 50% confidence level [@Wheeler2016hs]. These can be used to assess whether the range of predicted performance is different than the nameplate performance.
 
-### Tolerance intervals
-
-Using the above Monte Carlo simulation, we can also create tolerance intervals to bracket the consumption values that we will likely see over a year's time. We will construct a `r sigmas`-sigma, or `r pi_percent_data`, tolerance interval with a 50% confidence level [@Wheeler:2016hs]. These can be used to assess whether the range of predicted performance is different than the nameplate performance.
-
-```{r story}
-# Data Story ##
-# Population mean and standard deviation, based on the moving range
-rf_annual_mean <- mean(rf_annual)
-rf_annual_sd <- sd(rf_annual)
+```{r tol_comp}
 # Prediction interval lower and upper
-lcl <- rf_annual_mean - sigmas * rf_annual_sd
-ucl <- rf_annual_mean + sigmas * rf_annual_sd
+comp_agg_df <- comp_df %>% 
+  group_by(method) %>% 
+  summarise(annual_mean = mean(annual_total_kWh),
+            annual_sd = sd(annual_total_kWh)) %>% 
+  mutate(ltl = annual_mean - sigmas * annual_sd,
+                   utl = annual_mean + sigmas * annual_sd) %>% 
+  select(method, ltl, utl) 
+comp_agg_df %>% 
+  kable(format = "html", digits = c(NA, 0, 0)) %>% 
+  kable_styling(full_width = FALSE)
+
 ```
 
+Electricity being relatively cheap, and refrigerators being relatively expensive, we will take the more conservative (wider) estimate from the "Distribution" model. 
+
+## Conclusion
 
 ```{r comparison_text, echo=FALSE}
+ltl <- comp_agg_df$ltl[comp_agg_df$method == "Distribution"]
+utl <- comp_agg_df$utl[comp_agg_df$method == "Distribution"]
+
 rf_annual_mean_pt <- format(round(mean(rf_annual), 0), digits = 2)
 rf_annual_sd_pt <- format(round(sd(rf_annual), 1), digits = 2)
-rf_annual_lcl <- format(lcl, digits = 3)
-rf_annual_ucl <- format(ucl, digits = 3)
+rf_annual_ltl <- format(ltl, digits = 3)
+rf_annual_utl <- format(utl, digits = 3)
 
-if(lcl > 296) {
+if(ltl > 296) {
   compare_txt <- c("more than")
   action_txt <- c("consider replacing")
 } else {
   action_txt <- c("not consider replacing")
-  if(ucl < 296) {
+  if(utl < 296) {
     compare_txt <- c("less than")
   } else {
     compare_txt <- c("about the same as")
@@ -328,10 +561,8 @@ if(lcl > 296) {
 ```
 
 
-## Conclusion
+Based on the provided data, we can expect annual electricity use to fall between `r rf_annual_ltl` kWh and `r rf_annual_utl` kWh. With a nameplate consumption of 296 kWh per annum, we can say that the refrigerator very likely consumes `r compare_txt` the nameplate. Guy should `r action_txt` his refrigerator.
 
-Based on the provided data, we can expect annual electricity use to fall between `r rf_annual_lcl` kWh and `r rf_annual_ucl` kWh. With a nameplate consumption of 296 kWh per annum, we can say that the refrigerator very likely consumes `r compare_txt` the nameplate. Guy should `r action_txt` his refrigerator.
-
-
+We have noted several assumptions in the above analysis, and need more data to test those assumptions, so we can also recommend continuing to collect data and repeating the analysis when we have 20 to 30 observations, not including the first points after power outages. This will allow us to determine if we have homogeneous data and, if we do, to obtain greater fidelity in our estimates of the population tolerance intervals, regardless of method used to determine them.
 
 # References
